@@ -19,8 +19,9 @@ import (
 
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 
+	"fmt"
+
 	"golang.org/x/net/context"
-	"google.golang.org/grpc"
 )
 
 // Txn is the interface that wraps mini-transactions.
@@ -61,14 +62,10 @@ type txn struct {
 	cthen bool
 	celse bool
 
-	isWrite bool
-
 	cmps []*pb.Compare
 
-	sus []*pb.RequestOp
-	fas []*pb.RequestOp
-
-	callOpts []grpc.CallOption
+	sus []Op
+	fas []Op
 }
 
 func (txn *txn) If(cs ...Cmp) Txn {
@@ -110,8 +107,7 @@ func (txn *txn) Then(ops ...Op) Txn {
 	txn.cthen = true
 
 	for _, op := range ops {
-		txn.isWrite = txn.isWrite || op.isWrite()
-		txn.sus = append(txn.sus, op.toRequestOp())
+		txn.sus = append(txn.sus, op)
 	}
 
 	return txn
@@ -128,24 +124,101 @@ func (txn *txn) Else(ops ...Op) Txn {
 	txn.celse = true
 
 	for _, op := range ops {
-		txn.isWrite = txn.isWrite || op.isWrite()
-		txn.fas = append(txn.fas, op.toRequestOp())
+		txn.fas = append(txn.fas, op)
 	}
 
 	return txn
 }
 
-func (txn *txn) Commit() (*TxnResponse, error) {
-	txn.mu.Lock()
-	defer txn.mu.Unlock()
-
-	r := &pb.TxnRequest{Compare: txn.cmps, Success: txn.sus, Failure: txn.fas}
-
-	var resp *pb.TxnResponse
-	var err error
-	resp, err = txn.kv.remote.Txn(txn.ctx, r, txn.callOpts...)
-	if err != nil {
-		return nil, toErr(txn.ctx, err)
+func (txn *txn) do(op Op) (*pb.ResponseOp, error) {
+	switch op.t {
+	case tRange:
+		r, err := txn.kv.opGet(txn.ctx, op)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.ResponseOp{
+			Response: &pb.ResponseOp_ResponseRange{
+				ResponseRange: (*pb.RangeResponse)(r),
+			},
+		}, nil
+	case tPut:
+		r, err := txn.kv.opPut(txn.ctx, op)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.ResponseOp{
+			Response: &pb.ResponseOp_ResponsePut{
+				ResponsePut: (*pb.PutResponse)(r),
+			},
+		}, nil
+	case tDeleteRange:
+		r, err := txn.kv.opDelete(txn.ctx, op)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.ResponseOp{
+			Response: &pb.ResponseOp_ResponseDeleteRange{
+				ResponseDeleteRange: (*pb.DeleteRangeResponse)(r),
+			},
+		}, nil
+	default:
+		return nil, fmt.Errorf("unknown op in txn: %#v", op)
 	}
-	return (*TxnResponse)(resp), nil
+}
+
+func (txn *txn) Commit() (*TxnResponse, error) {
+	txn.kv.Lock()
+	defer txn.kv.Unlock()
+
+	resp := &TxnResponse{
+		Header: &pb.ResponseHeader{},
+	}
+
+	good := true
+	for _, c := range txn.cmps {
+		gr, err := txn.kv.Get(txn.ctx, string(c.Key))
+		if err != nil {
+			return nil, err
+		}
+
+		switch c.Target {
+		case pb.Compare_VERSION:
+			ver := int64(0)
+			if len(gr.Kvs) > 0 {
+				ver = gr.Kvs[0].Version
+			}
+			cv, _ := c.TargetUnion.(*pb.Compare_Version)
+			if ver != cv.Version {
+				good = false
+			}
+		case pb.Compare_MOD:
+			mod := int64(0)
+			if len(gr.Kvs) > 0 {
+				mod = gr.Kvs[0].ModRevision
+			}
+			cv, _ := c.TargetUnion.(*pb.Compare_ModRevision)
+			if mod != cv.ModRevision {
+				good = false
+			}
+		default:
+			return nil, fmt.Errorf("unknown txn target %v", c.Target)
+		}
+	}
+
+	resp.Succeeded = good
+	ops := txn.sus
+	if !good {
+		ops = txn.fas
+	}
+
+	for _, op := range ops {
+		r, err := txn.do(op)
+		if err != nil {
+			return nil, err
+		}
+		resp.Responses = append(resp.Responses, r)
+	}
+
+	return resp, nil
 }
