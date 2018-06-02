@@ -2,7 +2,6 @@ package driver
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"strings"
 )
@@ -64,7 +63,6 @@ func (g *Generic) Watch(ctx context.Context, key string, revision int64) <-chan 
 
 		start(watchChan)
 
-		fmt.Println("!!!!!!! WATCH REVISION ", key, " ", revision)
 		if revision > 0 {
 			keys, err := g.replayEvents(ctx, key, revision)
 			if err != nil {

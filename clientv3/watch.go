@@ -15,8 +15,6 @@
 package clientv3
 
 import (
-	"fmt"
-
 	v3rpc "github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"github.com/coreos/etcd/mvcc/mvccpb"
@@ -56,7 +54,6 @@ func (k *kv) Watch(ctx context.Context, key string, opts ...OpOption) WatchChan 
 				result <- NewWatchResponseErr(e.Err)
 				continue
 			} else if e.Start {
-				fmt.Println("STARTING WATCH", key)
 				result <- WatchResponse{
 					Created: true,
 				}
@@ -88,7 +85,6 @@ func (k *kv) Watch(ctx context.Context, key string, opts ...OpOption) WatchChan 
 					event,
 				},
 			}
-			fmt.Printf("FOR WATCH %s: %v\n", key, wr)
 			result <- wr
 		}
 	}()

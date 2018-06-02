@@ -7,8 +7,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"fmt"
-
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/pkg/broadcast"
 )
@@ -72,7 +70,6 @@ func (g *Generic) Get(ctx context.Context, key string) (*KeyValue, error) {
 
 func (g *Generic) replayEvents(ctx context.Context, key string, revision int64) ([]*KeyValue, error) {
 	rows, err := g.db.QueryContext(ctx, g.ReplaySQL, key, revision)
-	fmt.Printf("!!!! REPLAYED for key %s\n", key)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +81,6 @@ func (g *Generic) replayEvents(ctx context.Context, key string, revision int64) 
 		if err := scan(rows.Scan, &value); err != nil {
 			return nil, err
 		}
-		fmt.Printf("!!!! REPLAYED for key %s: %v\n", key, value)
 		resp = append(resp, &value)
 	}
 
