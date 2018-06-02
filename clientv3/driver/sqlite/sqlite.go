@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"database/sql"
 	"strings"
 
 	"github.com/coreos/etcd/clientv3/driver"
@@ -24,6 +25,24 @@ WHERE kv.name like ? limit ?
 	insertSQL = `
 INSERT INTO key_value(` + fieldList + `)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	schema = []string{
+		`create table if not exists key_value
+			(
+				name INTEGER,
+				value BLOB,
+				create_revision INTEGER,
+				revision INTEGER,
+				ttl INTEGER,
+				version INTEGER,
+				del INTEGER,
+				old_value BLOB,
+				id INTEGER primary key autoincrement,
+				old_revision INTEGER
+			)`,
+		`create index if not exists name_idx on key_value (name)`,
+		`create index if not exists revision_idx on key_value (revision)`,
+	}
 )
 
 func NewSQLite() *driver.Generic {
@@ -35,4 +54,20 @@ func NewSQLite() *driver.Generic {
 		ReplaySQL:       "SELECT id, " + fieldList + " FROM key_value WHERE name like ? and revision <= ?",
 		GetRevisionSQL:  "SELECT MAX(revision) FROM key_value",
 	}
+}
+
+func Open() (*sql.DB, error) {
+	db, err := sql.Open("sqlite3", "./state.db")
+	if err != nil {
+		return nil, err
+	}
+
+	for _, stmt := range schema {
+		_, err := db.Exec(stmt)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return db, nil
 }

@@ -15,7 +15,6 @@
 package clientv3
 
 import (
-	"database/sql"
 	"sync"
 
 	"github.com/coreos/etcd/clientv3/driver"
@@ -74,7 +73,7 @@ type kv struct {
 func newKV() *kv {
 	dbOnce.Do(func() {
 		var err error
-		db, err := sql.Open("sqlite3", "./foo.db")
+		db, err := sqlite.Open()
 		if err != nil {
 			logrus.Fatal(err)
 		}
