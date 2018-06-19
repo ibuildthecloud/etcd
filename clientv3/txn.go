@@ -15,26 +15,15 @@
 package clientv3
 
 import (
+	"fmt"
 	"sync"
+	"time"
 
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
-
-	"fmt"
-
 	"golang.org/x/net/context"
+	utiltrace "k8s.io/apiserver/pkg/util/trace"
 )
 
-// Txn is the interface that wraps mini-transactions.
-//
-//	 Txn(context.TODO()).If(
-//	  Compare(Value(k1), ">", v1),
-//	  Compare(Version(k1), "=", 2)
-//	 ).Then(
-//	  OpPut(k2,v2), OpPut(k3,v3)
-//	 ).Else(
-//	  OpPut(k4,v4), OpPut(k5,v5)
-//	 ).Commit()
-//
 type Txn interface {
 	// If takes a list of comparison. If all comparisons passed in succeed,
 	// the operations passed into Then() will be executed. Or the operations
@@ -168,16 +157,24 @@ func (txn *txn) do(op Op) (*pb.ResponseOp, error) {
 }
 
 func (txn *txn) Commit() (*TxnResponse, error) {
-	txn.kv.Lock()
-	defer txn.kv.Unlock()
+	trace := utiltrace.New("SQL Commit")
+	defer trace.LogIfLong(500 * time.Millisecond)
 
+	locks := map[string]bool{}
 	resp := &TxnResponse{
 		Header: &pb.ResponseHeader{},
 	}
 
 	good := true
 	for _, c := range txn.cmps {
-		gr, err := txn.kv.Get(txn.ctx, string(c.Key))
+		k := string(c.Key)
+		if !locks[k] {
+			txn.kv.l.Lock(k)
+			trace.Step(fmt.Sprintf("lock acquired: %s", k))
+			locks[k] = true
+			defer txn.kv.l.Unlock(k)
+		}
+		gr, err := txn.kv.Get(txn.ctx, k)
 		if err != nil {
 			return nil, err
 		}
@@ -204,6 +201,8 @@ func (txn *txn) Commit() (*TxnResponse, error) {
 		default:
 			return nil, fmt.Errorf("unknown txn target %v", c.Target)
 		}
+
+		trace.Step(fmt.Sprintf("condition key %s good %v", k, good))
 	}
 
 	resp.Succeeded = good
@@ -218,6 +217,7 @@ func (txn *txn) Commit() (*TxnResponse, error) {
 			return nil, err
 		}
 		resp.Responses = append(resp.Responses, r)
+		trace.Step(fmt.Sprintf("op key %s op %v", op.key, op.t))
 	}
 
 	return resp, nil

@@ -3,24 +3,30 @@ package driver
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/pkg/broadcast"
+	"github.com/sirupsen/logrus"
+	utiltrace "k8s.io/apiserver/pkg/util/trace"
 )
 
 type Generic struct {
 	db *sql.DB
 
 	CleanupSQL      string
+	GetSQL          string
 	ListSQL         string
 	ListRevisionSQL string
 	ListResumeSQL   string
 	ReplaySQL       string
 	InsertSQL       string
 	GetRevisionSQL  string
+	ToDeleteSQL     string
+	DeleteOldSQL    string
 	revision        int64
 
 	changes     chan *KeyValue
@@ -49,10 +55,50 @@ func (g *Generic) Start(ctx context.Context, db *sql.DB) error {
 			case <-ctx.Done():
 				return
 			case <-time.After(time.Minute):
-				db.ExecContext(ctx, g.CleanupSQL, time.Now().Second())
+				_, err := g.ExecContext(ctx, g.CleanupSQL, time.Now().Unix())
+				if err != nil {
+					logrus.Errorf("Failed to purge expired TTL entries")
+				}
+
+				err = g.cleanup(ctx)
+				if err != nil {
+					logrus.Errorf("Failed to cleanup duplicate entries")
+				}
 			}
 		}
 	}()
+
+	return nil
+}
+
+func (g *Generic) cleanup(ctx context.Context) error {
+	rows, err := g.QueryContext(ctx, g.ToDeleteSQL)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	toDelete := map[string]int64{}
+	for rows.Next() {
+		var (
+			count, revision int64
+			name            string
+		)
+		err := rows.Scan(&count, &name, &revision)
+		if err != nil {
+			return err
+		}
+		toDelete[name] = revision
+	}
+
+	rows.Close()
+
+	for name, rev := range toDelete {
+		_, err = g.ExecContext(ctx, g.DeleteOldSQL, name, rev, rev)
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -69,7 +115,7 @@ func (g *Generic) Get(ctx context.Context, key string) (*KeyValue, error) {
 }
 
 func (g *Generic) replayEvents(ctx context.Context, key string, revision int64) ([]*KeyValue, error) {
-	rows, err := g.db.QueryContext(ctx, g.ReplaySQL, key, revision)
+	rows, err := g.QueryContext(ctx, g.ReplaySQL, key, revision)
 	if err != nil {
 		return nil, err
 	}
@@ -99,12 +145,14 @@ func (g *Generic) List(ctx context.Context, revision, limit int64, rangeKey, sta
 		limit = limit + 1
 	}
 
-	if revision <= 0 {
-		rows, err = g.db.QueryContext(ctx, g.ListSQL, rangeKey, limit)
+	if !strings.HasSuffix(rangeKey, "%") && revision <= 0 {
+		rows, err = g.QueryContext(ctx, g.GetSQL, rangeKey, limit)
+	} else if revision <= 0 {
+		rows, err = g.QueryContext(ctx, g.ListSQL, rangeKey, limit)
 	} else if len(startKey) > 0 {
-		rows, err = g.db.QueryContext(ctx, g.ListResumeSQL, revision, rangeKey, startKey, limit)
+		rows, err = g.QueryContext(ctx, g.ListResumeSQL, revision, rangeKey, startKey, limit)
 	} else {
-		rows, err = g.db.QueryContext(ctx, g.ListRevisionSQL, revision, rangeKey, limit)
+		rows, err = g.QueryContext(ctx, g.ListRevisionSQL, revision, rangeKey, limit)
 	}
 
 	if err != nil {
@@ -151,6 +199,20 @@ func (g *Generic) Update(ctx context.Context, key string, value []byte, revision
 	return &oldKv, kv, nil
 }
 
+func (g *Generic) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	trace := utiltrace.New(fmt.Sprintf("SQL DB ExecContext query: %s keys: %v", query, args))
+	defer trace.LogIfLong(500 * time.Millisecond)
+
+	return g.db.ExecContext(ctx, query, args...)
+}
+
+func (g *Generic) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	trace := utiltrace.New(fmt.Sprintf("SQL DB QueryContext query: %s keys: %v", query, args))
+	defer trace.LogIfLong(500 * time.Millisecond)
+
+	return g.db.QueryContext(ctx, query, args...)
+}
+
 func (g *Generic) mod(ctx context.Context, delete bool, key string, value []byte, revision int64, ttl int64) (*KeyValue, error) {
 	oldKv, err := g.Get(ctx, key)
 	if err != nil {
@@ -163,6 +225,10 @@ func (g *Generic) mod(ctx context.Context, delete bool, key string, value []byte
 
 	if revision > 0 && oldKv.Revision != revision {
 		return nil, ErrRevisionMatch
+	}
+
+	if ttl > 0 {
+		ttl = int64(time.Now().Unix()) + ttl
 	}
 
 	newRevision := atomic.AddInt64(&g.revision, 1)
@@ -186,7 +252,7 @@ func (g *Generic) mod(ctx context.Context, delete bool, key string, value []byte
 		result.Del = 1
 	}
 
-	_, err = g.db.ExecContext(ctx, g.InsertSQL,
+	_, err = g.ExecContext(ctx, g.InsertSQL,
 		result.Key,
 		result.Value,
 		result.OldValue,

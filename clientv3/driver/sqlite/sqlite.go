@@ -17,7 +17,8 @@ FROM key_value kv
     (
       SELECT MAX(revision) revision, kvi.name
       FROM key_value kvi
-          GROUP BY kvi.name
+		%REV%
+        GROUP BY kvi.name
     ) AS r
     ON r.name = kv.name AND r.revision = kv.revision
 WHERE kv.name like ? limit ?
@@ -48,16 +49,19 @@ INSERT INTO key_value(` + fieldList + `)
 func NewSQLite() *driver.Generic {
 	return &driver.Generic{
 		CleanupSQL:      "DELETE FROM key_value WHERE ttl > 0 AND ttl < ?",
+		GetSQL:          "SELECT id, " + fieldList + " FROM key_value WHERE name = ? ORDER BY revision DESC limit ?",
 		ListSQL:         strings.Replace(baseList, "%REV%", "", -1),
 		ListRevisionSQL: strings.Replace(baseList, "%REV%", "WHERE kvi.revision <= ?", -1),
 		InsertSQL:       insertSQL,
 		ReplaySQL:       "SELECT id, " + fieldList + " FROM key_value WHERE name like ? and revision <= ?",
 		GetRevisionSQL:  "SELECT MAX(revision) FROM key_value",
+		ToDeleteSQL:     "SELECT count(*) c, name, max(revision) FROM key_value GROUP BY name HAVING c > 1 or (c = 1 and del = 1)",
+		DeleteOldSQL:    "DELETE FROM key_value WHERE name = ? AND (revision < ? OR (revision = ? AND del = 1))",
 	}
 }
 
 func Open() (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", "./state.db")
+	db, err := sql.Open("sqlite3", "./state.db?_journal=WAL&cache=shared")
 	if err != nil {
 		return nil, err
 	}

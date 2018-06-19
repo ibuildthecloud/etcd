@@ -21,6 +21,7 @@ import (
 	"github.com/coreos/etcd/clientv3/driver/sqlite"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"github.com/coreos/etcd/mvcc/mvccpb"
+	"github.com/docker/docker/pkg/locker"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 )
@@ -66,7 +67,7 @@ type KV interface {
 }
 
 type kv struct {
-	sync.Mutex
+	l locker.Locker
 	d driver.Driver
 }
 
@@ -92,8 +93,10 @@ func newKV() *kv {
 }
 
 func (k *kv) Put(ctx context.Context, key, val string, opts ...OpOption) (*PutResponse, error) {
-	k.Lock()
-	defer k.Unlock()
+	//trace := utiltrace.New(fmt.Sprintf("SQL Put key: %s", key))
+	//defer trace.LogIfLong(500 * time.Millisecond)
+	k.l.Lock(key)
+	defer k.l.Unlock(key)
 
 	op := OpPut(key, val, opts...)
 	return k.opPut(ctx, op)
@@ -108,6 +111,8 @@ func (k *kv) opPut(ctx context.Context, op Op) (*PutResponse, error) {
 }
 
 func (k *kv) Get(ctx context.Context, key string, opts ...OpOption) (*GetResponse, error) {
+	//trace := utiltrace.New(fmt.Sprintf("SQL Get key: %s", key))
+	//defer trace.LogIfLong(500 * time.Millisecond)
 	op := OpGet(key, opts...)
 	return k.opGet(ctx, op)
 }
@@ -183,8 +188,10 @@ func getResponse(values []*driver.KeyValue, limit int64, count bool) *GetRespons
 }
 
 func (k *kv) Delete(ctx context.Context, key string, opts ...OpOption) (*DeleteResponse, error) {
-	k.Lock()
-	defer k.Unlock()
+	//trace := utiltrace.New(fmt.Sprintf("SQL Delete key: %s", key))
+	//defer trace.LogIfLong(500 * time.Millisecond)
+	k.l.Lock(key)
+	defer k.l.Unlock(key)
 
 	op := OpDelete(key, opts...)
 	return k.opDelete(ctx, op)
