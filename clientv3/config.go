@@ -33,4 +33,6 @@ type Config struct {
 
 	// TLS holds the client secure credentials, if any.
 	TLS *tls.Config
+
+	DialTimeout time.Duration
 }
