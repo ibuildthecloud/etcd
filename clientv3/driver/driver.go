@@ -5,7 +5,7 @@ import (
 )
 
 type Driver interface {
-	List(ctx context.Context, revision, limit int64, rangeKey, startKey string) ([]*KeyValue, error)
+	List(ctx context.Context, revision, limit int64, rangeKey, startKey string) (kvs []*KeyValue, listRevision int64, err error)
 
 	Delete(ctx context.Context, key string, revision int64) ([]*KeyValue, error)
 

@@ -104,7 +104,7 @@ func (g *Generic) cleanup(ctx context.Context) error {
 }
 
 func (g *Generic) Get(ctx context.Context, key string) (*KeyValue, error) {
-	kvs, err := g.List(ctx, 0, 1, key, "")
+	kvs, _, err := g.List(ctx, 0, 1, key, "")
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +133,7 @@ func (g *Generic) replayEvents(ctx context.Context, key string, revision int64) 
 	return resp, nil
 }
 
-func (g *Generic) List(ctx context.Context, revision, limit int64, rangeKey, startKey string) ([]*KeyValue, error) {
+func (g *Generic) List(ctx context.Context, revision, limit int64, rangeKey, startKey string) ([]*KeyValue, int64, error) {
 	var (
 		rows *sql.Rows
 		err  error
@@ -145,9 +145,16 @@ func (g *Generic) List(ctx context.Context, revision, limit int64, rangeKey, sta
 		limit = limit + 1
 	}
 
+	var (
+		currentRevision int64
+		foundRevision   int64
+	)
+
 	if !strings.HasSuffix(rangeKey, "%") && revision <= 0 {
+		currentRevision = atomic.LoadInt64(&g.revision)
 		rows, err = g.QueryContext(ctx, g.GetSQL, rangeKey, limit)
 	} else if revision <= 0 {
+		currentRevision = atomic.LoadInt64(&g.revision)
 		rows, err = g.QueryContext(ctx, g.ListSQL, rangeKey, limit)
 	} else if len(startKey) > 0 {
 		rows, err = g.QueryContext(ctx, g.ListResumeSQL, revision, rangeKey, startKey, limit)
@@ -156,7 +163,7 @@ func (g *Generic) List(ctx context.Context, revision, limit int64, rangeKey, sta
 	}
 
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -164,14 +171,26 @@ func (g *Generic) List(ctx context.Context, revision, limit int64, rangeKey, sta
 	for rows.Next() {
 		value := KeyValue{}
 		if err := scan(rows.Scan, &value); err != nil {
-			return nil, err
+			return nil, 0, err
+		}
+		if value.Revision > foundRevision {
+			foundRevision = value.Revision
 		}
 		if value.Del == 0 {
 			resp = append(resp, &value)
 		}
 	}
 
-	return resp, nil
+	// This means revision was <= 0 so if we get back a partial response we should just return the current
+	// otherwise the revision that was found in the response
+	if currentRevision > 0 {
+		if len(resp) >= int(limit) {
+			return resp, currentRevision, nil
+		}
+		return resp, foundRevision, nil
+	}
+
+	return resp, revision, nil
 }
 
 func (g *Generic) Delete(ctx context.Context, key string, revision int64) ([]*KeyValue, error) {
