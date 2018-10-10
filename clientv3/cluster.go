@@ -15,38 +15,12 @@
 package clientv3
 
 import (
-	"google.golang.org/grpc"
+	"golang.org/x/net/context"
 )
 
-// Client provides and manages an etcd v3 client session.
-type Client struct {
-	Cluster
-	KV
-	Lease
-	Watcher
-	callOpts []grpc.CallOption
+type Cluster struct {
 }
 
-// New creates a new etcdv3 client from a given configuration.
-func New(cfg Config) (*Client, error) {
-	c := &Client{
-		Lease: &lessor{},
-	}
-	kv := newKV()
-	c.KV = kv
-	c.Watcher = kv
-	return c, nil
-}
-
-// Close shuts down the client's etcd connections.
-func (c *Client) Close() error {
-	if c.Watcher != nil {
-		return c.Watcher.Close()
-	}
-	return nil
-}
-
-// Endpoints lists the registered endpoints for the client.
-func (c *Client) Endpoints() (eps []string) {
-	return
+func (c *Cluster) MemberList(ctx context.Context) (interface{}, error) {
+	return nil, nil
 }
